@@ -1,2 +1,3 @@
 # RDARTarray
-Microarray data analysis for CTCs in stage III NSCLC going through therapy
+Microarray data analysis for CTCs isolated from stage III NSCLC going through therapy using the GO chips. 
+
