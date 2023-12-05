@@ -1,0 +1,428 @@
+---
+title: "S4_survival_gene"
+author: "Zeqi Niu"
+date: "10/10/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r}
+library(survival)
+library(readxl)
+library(tidyverse)
+library(survival)
+library(RegParallel)
+```
+# load in pre calculated PFS data
+```{r}
+exprSet <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+exprSet_backup <- exprSet
+sdata <- read.csv("./sdata.csv", check.names = FALSE, row.names = 1)
+pfs <- read_excel("../matching_PFStable_Dec_newversion.xlsx")
+```
+
+# data clean up
+```{r}
+pfs1 <- separate(pfs, `patient ID`, c("year", "um", "id"), sep = " " )
+pfs1$id <- as.factor(as.numeric(pfs1$id))
+sdata1 <- sdata[,-14:-37]
+sdata1$PurificationTechnology <- NULL
+sdata1$`Sample Source` <- NULL
+sdata1$`Plate Name` <- NULL
+
+pfs2 <- pfs1[ , c("id", "PFS Days","PFS month","right censor","progression event")]
+```
+for checking S1
+```{r}
+pdata <- merge(sdata1, pfs2, by.x = "PatientID", by.y = "id")
+```
+
+
+# start with simple one timepoint gene expression PFS prediction. 
+
+
+## only looking at baseline data
+
+```{r}
+sdata1_base <- sdata1[sdata1$TimePoint == "Base",]
+pdata_base <- merge(sdata1_base, pfs2, by.x = "PatientID", by.y = "id")
+```
+```{r}
+exprSet <- exprSet_backup
+exprSet_base <- exprSet[, colnames(exprSet) %in% pdata_base$`Sample Name` ]
+exprSet_base1 <- t(exprSet_base)
+coxdata <- merge(pdata_base, exprSet_base1, by.x ="Sample Name", by.y = 0)
+
+colnames <- make.names(colnames(coxdata))
+colnames(coxdata) <- colnames
+```
+
+# PDL1 high vs low
+```{r}
+gene <- "CD274"
+survplotdata <- coxdata[,c('PFS.month', 'progression.event',paste(gene))]
+
+# set Z-scale cut-offs for high and low expression
+highExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.75))
+lowExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.25))
+midExpr <-  as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.5))
+
+survplotdata[,paste(gene)] <- ifelse(survplotdata[,paste(gene)] >= midExpr, 'High','Low')
+
+
+# relevel the factors to have mid as the ref level
+survplotdata[,paste(gene)] <- factor(survplotdata[,paste(gene)],
+                              levels = c('Low', 'High'))
+
+library(survminer)
+
+
+ggsurvplot(survfit(Surv(PFS.month, progression.event) ~ CD274,
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal(),
+            risk.table.y.text.col = TRUE,
+            risk.table.y.text = FALSE)
+```
+
+```{r}
+res <- RegParallel(
+  data = coxdata,
+  formula = 'Surv(`PFS.month`, `progression.event`) ~ [*]',
+  FUN = function(formula, data)
+    coxph(formula = formula,
+          data = data,
+          ties = 'breslow',
+          singular.ok = TRUE),
+  FUNtype = 'coxph',
+  variables = colnames(coxdata)[15:ncol(coxdata)],
+  blocksize = 2000,
+  cores = 2,
+  nestedParallel = FALSE,
+  conflevel = 95,
+  p.adjust = 'BH')
+res <- res[!is.na(res$P),]
+res
+
+res <- res[order(res$LogRank, decreasing = FALSE),]
+final_base <- subset(res, LogRank < 0.01)
+write.csv(final_base, "baseline expression with survival.csv")
+```
+
+```{r}
+gene <- "ZNF205"
+survplotdata <- coxdata[,c('PFS.month', 'progression.event',paste(gene))]
+
+# set Z-scale cut-offs for high and low expression
+highExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.75))
+lowExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.25))
+
+survplotdata[,paste(gene)] <- ifelse(survplotdata[,paste(gene)] >= highExpr, 'High',
+                              ifelse(survplotdata[,paste(gene)] <= lowExpr, 'Low', 'Mid'))
+
+
+# relevel the factors to have mid as the ref level
+survplotdata[,paste(gene)] <- factor(survplotdata[,paste(gene)],
+                              levels = c('Mid', 'Low', 'High'))
+
+library(survminer)
+
+
+ggsurvplot(survfit(Surv(PFS.month, progression.event) ~ ZNF205,
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal(),
+            risk.table.y.text.col = TRUE,
+            risk.table.y.text = FALSE)
+```
+
+```{r}
+top_DEGs_91 <- read.csv("./toptables/bwk4_paired_sortlfc_91.csv")
+top_DEGs_7 <- read.csv("stable patients bw4 DEG signatures.csv")
+intersect(final_base$Variable, top_DEGs_91$X)
+``` 
+
+## only looking at wk4 data
+
+```{r}
+sdata1_wk4 <- sdata1[sdata1$TimePoint == "Mid",]
+pdata_wk4 <- merge(sdata1_wk4, pfs2, by.x = "PatientID", by.y = "id")
+```
+```{r}
+exprSet <- exprSet_backup
+exprSet_wk4 <- exprSet[, colnames(exprSet) %in% pdata_wk4$`Sample Name` ]
+exprSet_wk41 <- t(exprSet_wk4)
+coxdata <- merge(pdata_wk4, exprSet_wk41, by.x ="Sample Name", by.y = 0)
+
+colnames <- make.names(colnames(coxdata))
+colnames(coxdata) <- colnames
+coxdata[1:10,1:20]
+```
+# PDL1 high vs low
+```{r}
+gene <- "CD274"
+survplotdata <- coxdata[,c('PFS.month', 'progression.event',paste(gene))]
+
+# set Z-scale cut-offs for high and low expression
+highExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.75))
+lowExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.25))
+midExpr <-  as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.5))
+
+survplotdata[,paste(gene)] <- ifelse(survplotdata[,paste(gene)] >= midExpr, 'High','Low')
+
+
+# relevel the factors to have mid as the ref level
+survplotdata[,paste(gene)] <- factor(survplotdata[,paste(gene)],
+                              levels = c('Low', 'High'))
+
+library(survminer)
+
+
+ggsurvplot(survfit(Surv(PFS.month, progression.event) ~ CD274,
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal(),
+            risk.table.y.text.col = TRUE,
+            risk.table.y.text = FALSE)
+```
+```{r}
+res <- RegParallel(
+  data = coxdata,
+  formula = 'Surv(`PFS.month`, `progression.event`) ~ [*]',
+  FUN = function(formula, data)
+    coxph(formula = formula,
+          data = data,
+          ties = 'breslow',
+          singular.ok = TRUE),
+  FUNtype = 'coxph',
+  variables = colnames(coxdata)[15:ncol(coxdata)],
+  blocksize = 2000,
+  cores = 2,
+  nestedParallel = FALSE,
+  conflevel = 95,
+  p.adjust = 'BH')
+res <- res[!is.na(res$P),]
+res
+
+res <- res[order(res$LogRank, decreasing = FALSE),]
+final_wk4 <- subset(res, LogRank < 0.01)
+intersect(final_wk4$Variable, final_base$Variable)
+length(setdiff(final_wk4$Variable, final_base$Variable))
+write.csv(final_wk4, "wk4 expression with survival.csv")
+```
+
+## only looking at after data
+
+```{r}
+sdata1_after <- sdata1[sdata1$TimePoint == "After",]
+pdata_after <- merge(sdata1_after, pfs2, by.x = "PatientID", by.y = "id")
+```
+```{r}
+exprSet <- exprSet_backup
+exprSet_after <- exprSet[, colnames(exprSet) %in% pdata_after$`Sample Name` ]
+exprSet_after1 <- t(exprSet_after)
+coxdata <- merge(pdata_after, exprSet_after1, by.x ="Sample Name", by.y = 0)
+
+colnames <- make.names(colnames(coxdata))
+colnames(coxdata) <- colnames
+coxdata[1:10,1:20]
+```
+# PDL1 high vs low
+```{r}
+gene <- "CD274"
+survplotdata <- coxdata[,c('PFS.month', 'progression.event',paste(gene))]
+
+# set Z-scale cut-offs for high and low expression
+highExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.75))
+lowExpr <- as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.25))
+midExpr <-  as.numeric(quantile(survplotdata[,paste(gene)], probs = 0.5))
+
+survplotdata[,paste(gene)] <- ifelse(survplotdata[,paste(gene)] >= midExpr, 'High','Low')
+
+
+# relevel the factors to have mid as the ref level
+survplotdata[,paste(gene)] <- factor(survplotdata[,paste(gene)],
+                              levels = c('Low', 'High'))
+
+library(survminer)
+
+
+ggsurvplot(survfit(Surv(PFS.month, progression.event) ~ CD274,
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal(),
+            risk.table.y.text.col = TRUE,
+            risk.table.y.text = FALSE)
+```
+```{r}
+res <- RegParallel(
+  data = coxdata,
+  formula = 'Surv(`PFS.month`, `progression.event`) ~ [*]',
+  FUN = function(formula, data)
+    coxph(formula = formula,
+          data = data,
+          ties = 'breslow',
+          singular.ok = TRUE),
+  FUNtype = 'coxph',
+  variables = colnames(coxdata)[15:ncol(coxdata)],
+  blocksize = 2000,
+  cores = 2,
+  nestedParallel = FALSE,
+  conflevel = 95,
+  p.adjust = 'fdr')
+res <- res[!is.na(res$P),]
+res
+
+res <- res[order(res$LogRank, decreasing = FALSE),]
+final_after <- subset(res, LogRank < 0.01)
+intersect(final_after$Variable, final_wk4$Variable)
+length(setdiff(final_wk4$Variable, final_base$Variable))
+write.csv(final_after, "1mon expression with survival.csv")
+```
+
+## Is there any genes highly expressed between the two timepoints and indicative of survival, patients with just baseline and week4 
+
+imported DESeq2 results of the fold change. -not valid, need fold change for each patients. 
+```{r}
+sdata_base <- sdata1[sdata1$TimePoint=="Base",]
+sdata_mid <- sdata1[sdata1$TimePoint=="Mid",]
+sdata_after <- sdata1[sdata1$TimePoint=="After",]
+patient_id <- intersect(sdata_base$PatientID, sdata_mid$PatientID)
+sdata_base <- sdata_base[sdata_base$PatientID %in% patient_id,]
+sdata_mid <- sdata_mid[sdata_mid$PatientID %in% patient_id,]
+#generate fc
+exprSet <- exprSet_backup
+exprSet_base <- exprSet[,colnames(exprSet) %in% sdata_base$`Sample Name`]
+exprSet_mid <- exprSet[,colnames(exprSet) %in% sdata_mid$`Sample Name`]
+table(rownames(exprSet_base) == rownames(exprSet_mid))
+expr_fc <- log2(exprSet_mid/exprSet_base)
+#generate pdata
+pdata_bw<- merge(sdata_mid, pfs2, by.x = "PatientID", by.y = "id")
+```
+```{r}
+expr_fc1 <- t(expr_fc)
+coxdata <- merge(pdata_bw, expr_fc1, by.x ="Sample Name", by.y = 0)
+colnames <- make.names(colnames(coxdata))
+colnames(coxdata) <- colnames
+coxdata[1:10,1:20]
+```
+
+```{r}
+res <- RegParallel(
+  data = coxdata,
+  formula = 'Surv(`PFS.month`, `progression.event`) ~ [*]',
+  FUN = function(formula, data)
+    coxph(formula = formula,
+          data = data,
+          ties = 'breslow',
+          singular.ok = TRUE),
+  FUNtype = 'coxph',
+  variables = colnames(coxdata)[15:ncol(coxdata)],
+  blocksize = 2000,
+  cores = 2,
+  nestedParallel = FALSE,
+  conflevel = 95,
+  p.adjust = 'fdr')
+res <- res[!is.na(res$P),]
+res
+
+res <- res[order(res$LogRank, decreasing = FALSE),]
+final_fc <- res[res$LogRank < 0.01,]
+length(intersect(final_fc$Variable, final_base$Variable))
+length(intersect(final_base$Variable, final_wk4$Variable))
+length(setdiff(final_wk4$Variable, final_base$Variable))
+```
+
+```{r}
+library(survminer)
+genes <- intersect(final_fc$Variable, final_wk4$Variable)
+for (i in 1:length(genes)){
+  survplotdata <- coxdata[,c('PFS.month', 'progression.event',paste(genes[i]))]
+  summary(survplotdata)
+  
+  # set Z-scale cut-offs for high and low expression
+  highExpr <- as.numeric(quantile(survplotdata[,paste(genes[i])], probs = 0.75))
+  lowExpr <- as.numeric(quantile(survplotdata[,paste(genes[i])], probs = 0.25))
+  
+  survplotdata[,paste(genes[i])] <- ifelse(survplotdata[,paste(genes[i])] >= highExpr, 'High',
+                                ifelse(survplotdata[,paste(genes[i])] <= lowExpr, 'Low', 'Mid'))
+  
+  
+  # relevel the factors to have mid as the ref level
+  survplotdata[,paste(genes[i])] <- factor(survplotdata[,paste(genes[i])],
+                                levels = c('Mid', 'Low', 'High'))
+  
+  p1 <- ggsurvplot(survfit(as.formula(paste0("Surv(PFS.month, progression.event) ~", genes[i])),
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal())
+  
+  print(p1)
+}
+
+```
+
+# Pathway analysis
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+group <- "base"
+gene <- final_base$Variable
+gene.df <- bitr(gene, fromType = "SYMBOL",
+        toType = c("ENSEMBL", "ENTREZID"),
+        OrgDb = org.Hs.eg.db)
+
+kk <- enrichKEGG(gene         = gene.df$ENTREZID,
+                 organism     = 'hsa',
+                 pvalueCutoff = 1)
+head(kk)
+```
+
+
+
+```{r}
+ggo <- enrichGO(gene     = gene.df$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = 'ENTREZID',
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+                readable = TRUE)
+
+head(ggo)
+if(group == "fc"){
+  result_fc <- ggo@result
+  result_fc <- result_fc[result_fc$pvalue < 0.01, ]
+}
+
+if(group == "base"){
+  result_base <- ggo@result
+  result_base <- result_base[result_base$pvalue < 0.01, ]
+}
+
+if(group == "wk4"){
+  result_wk4 <- ggo@result
+  result_wk4 <- result_wk4[result_wk4$pvalue < 0.01, ]
+}
+length(intersect(result_base$ID, result_fc$ID))
+
+```
+
+
+
+
+> longitutional survival analysis, needs a little more reading. 

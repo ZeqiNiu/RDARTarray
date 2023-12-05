@@ -1,0 +1,246 @@
+---
+title: "S3_ruv"
+author: "Zeqi Niu"
+date: "10/1/2021"
+output: html_document
+---
+
+### Data Preparation and Quality control
+
+```{r}
+library(oligo)
+library(readxl)
+library(tidyverse)
+celFiles <- list.celfiles(path = "../PRO100776_UMich776_SEP/Raw_Data/", full.names = FALSE)
+pDat <- read_xlsx("../PRO100776_UMich776_SEP/PRO100776_UMich776_SEP_Sample_Table_changed.xlsx")
+
+pDat <- pDat %>% tidyr::separate(Condition, c("Type","Status"), ", ")
+
+celFiles1 <- as.data.frame(celFiles)
+celFiles2 <- celFiles1 %>% tidyr::separate(celFiles,c("ID","random"), "_", remove = FALSE)
+celFiles2 <- celFiles2 %>% tidyr::separate(random,c("well"))
+
+pDat <- merge(celFiles2, pDat, by.x = "well", by.y = "Well")
+
+ctcCels <- pDat$celFiles[which(pDat$Type == "Healthy")]
+clineCels <- pDat$celFiles[which(pDat$Type == "Cell line")]
+
+# affy batch objects 
+rawdata <- read.celfiles(paste("../PRO100776_UMich776_SEP/Raw_Data/",celFiles, sep = ""))
+ctcRaw <- read.celfiles(paste("../PRO100776_UMich776_SEP/Raw_Data/",ctcCels, sep=""))
+clineRaw <- read.celfiles(paste("../PRO100776_UMich776_SEP/Raw_Data/",clineCels, sep=""))
+```
+
+### Preprocessing
+
+```{r}
+# This is the standard RMA with default settings - quantile normalization ("qn")
+qnALL <- rma(rawdata) ; qnALLexp <- exprs(qnALL)
+qnCTC <- rma(ctcRaw) ; qnCTCexp <- exprs(qnCTC)
+qnCline <- rma(clineRaw) ; qnClinexp <- exprs(qnCline)
+
+# RUV specifically requests that we do NOT normalize (so there there is just background correction and summarization)
+noneALL <- rma(rawdata,normalize=FALSE) ; noneALLexp <- exprs(noneALL)
+noneCTC <- rma(ctcRaw, normalize=FALSE) ; noneCTCexp <- exprs(noneCTC)
+noneCline <- rma(clineRaw, normalize=FALSE) ; noneClinexp <- exprs(noneCline)
+
+
+library(clariomshumanhttranscriptcluster.db)
+ids = toTable(clariomshumanhttranscriptclusterSYMBOL)
+
+# make a annotation file based on gene max values in normalized CTCs 
+#xx <- read.csv(file="qnCTCexp.csv", row.names=1, header=T, stringsAsFactors=F)
+exprSet <- qnCTCexp    # choose normalized CTCs 
+probe2Keep <- intersect(rownames(exprSet), ids$probe_id)  # 18599 out of 27189  are in probe reference  - Use same for all
+exprSet=exprSet[rownames(exprSet) %in% probe2Keep, ]
+ids1 <- ids[ which(ids$probe_id %in% probe2Keep) , ]
+
+# sort annotation to match expression set. all the expression sets will have the same order
+im <- match(rownames(exprSet), ids1$probe_id)
+idss <- ids1[im, ]
+sum(idss$probe_id == rownames(exprSet)) == nrow(exprSet)  # TRUE
+idss <- cbind(idss, Mean=rowMeans(exprSet))  # cbind the row means on these IDs then use the function below to remove duplicate gene symbols
+
+# here is a function to remove duplicate genes symbols based on max ave expression
+# the code chunk with tmp = by(exprSet,ids$symbol,  function(x) rownames(x)[which.max(rowMeans(x))] ) still contained dups
+noDups <- function(aDF) {
+  dupsuniq <- unique(aDF$symbol[which(duplicated(aDF$symbol))])
+  toRM <- c()
+  if(length(dupsuniq) > 0) {
+    for(ii in 1:length(dupsuniq)) { 
+      dupIDs <- idss[which(aDF$symbol == dupsuniq[ii]),]
+      toRM <- c(toRM,setdiff(dupIDs$probe_id, dupIDs$probe_id[which(dupIDs$Mean == max(dupIDs$Mean))[1]]))
+    }       
+  }
+  if(length(toRM) > 0) { aDF <- aDF[-which(aDF$probe_id %in% toRM), ] }
+}
+
+idss <- noDups(idss)
+exprSet <- exprSet[idss$probe_id, ]
+sum(idss$probe_id == rownames(exprSet)) == nrow(exprSet)  # TRUE
+
+# treat all 6 expression sets (All cells and cell line and CTCs separated, normalized and not normalized)
+qnCTCexp <- qnCTCexp[idss$probe_id, ] ; rownames(qnCTCexp) <- idss$symbol    # used for choosing between duplicated probesets
+qnClinexp <- qnClinexp[idss$probe_id, ] ; rownames(qnClinexp) <- idss$symbol
+qnALLexp <- qnALLexp[idss$probe_id, ] ; rownames(qnALLexp) <- idss$symbol    # used for refining negative controls
+
+noneALLexp <- noneALLexp[idss$probe_id, ] ; rownames(noneALLexp) <- idss$symbol
+noneCTCexp <- noneCTCexp[idss$probe_id, ] ; rownames(noneCTCexp) <- idss$symbol # used for RUV
+noneClinexp <- noneClinexp[idss$probe_id, ] ; rownames(noneClinexp) <- idss$symbol
+
+# save these three files that we will need later.
+write.csv(noneCTCexp, file="noneCTCexp.csv")
+write.csv(qnCTCexp, file="qnCTCexp.csv")
+write.csv(qnALLexp, file="qnALLexp.csv")
+write.csv(pDat, file= "pDat.csv")
+
+```
+
+## Negative controls
+
+```{r}
+xx <- read.csv(file="qnALLexp.csv", row.names=1, header=T, stringsAsFactors=F)  # 18513    65
+#xx <- qnALLexp
+#colnames(xx)[which(colnames(xx) == "14_x_unkown.CEL")] <- "14_x_unknown.CEL"   # # fix a typo in the colnames of xx
+# add sample names to pDat 
+pDat <- read.csv(file="pDat.csv", header=T, row.names=1, stringsAsFactors=F)
+cels <- pDat$celFiles
+SampNam <- sub(".CEL","",cels)
+pDat <- cbind(pDat, SampNam)
+
+# add an X to CEL names that start with a number so that they match the matrix col names, if doing xx <- qnAllexp, this following step is no need. 
+cels[grep("^H", cels, perl=T, invert=T)] <- paste("X", grep("^H", cels, perl=T, invert=T, value=T), sep="")
+pDat$celFiles <- cels
+
+# re-organize so that pDat1 and xx1 cel file order is the same
+pDat1 <- pDat[order(pDat$celFiles), ]
+xx1 <- xx[,pDat1$celFiles]
+```
+
+```{r}
+load(file="../WBC_signatures.RData")  #  "AtlasOK" (1473 genes)  "PalmerOK" (693 genes)
+# matrix with only WBC genes
+xWBC <- as.matrix(xx1[union(PalmerOK,AtlasOK), ])
+
+cLin <- xWBC[, which(pDat1$Type == "Cell line")]
+clineAve <- apply(cLin, 1, mean)
+clineStd <- apply(cLin, 1, sd)
+
+ctc <- xWBC[, which(pDat1$Type == "Healthy")]
+ctcAve <- apply(ctc, 1, mean)
+ctcStd <- apply(ctc, 1, sd)
+
+if(1){
+plot(density(clineAve), col="blue", main="Average WBC Expression") 
+lines(density(ctcAve), col="red")
+legend("topright",c("Cell line","CTC"), col=c("blue","red"), lty=1   )
+}
+
+if(1){
+plot(density(clineStd), col="blue", main="Standard Deviation of WBC expression") 
+lines(density(ctcStd), col="red")
+legend("topright",c("Cell line","CTC"), col=c("blue","red") , lty=1  )
+}
+```
+
+```{r}
+keep1 <- names(ctcAve)[intersect(which(ctcAve > 6.5) , which(clineAve < 4)) ]       #  206
+keep2 <- names(ctcStd)[intersect(which(ctcStd > 0.6) , which(clineStd < 0.4)) ]  # 157
+toKeep <- intersect(keep1, keep2) 
+
+clineAveFilt <- clineAve[which(names(clineAve) %in% toKeep)]
+xWBC <- xWBC[names(sort(clineAveFilt, decreasing=TRUE)), ]
+
+library("ComplexHeatmap")
+Heatmap(xWBC, cluster_columns=F, cluster_rows=F, name="log-expr",
+        width = unit(12, "cm"), height = unit(10, "cm"),
+        column_title = paste( nrow(xWBC), "selected WBC genes were"),
+        column_labels = pDat1$SampNam,
+        column_split = pDat1$progression,
+        row_names_gp = gpar(fontsize = 6), column_names_gp = gpar(fontsize = 8) )
+
+```
+
+```{r showCont}
+negCont <- sort(rownames(xWBC))
+cat(negCont)
+```
+
+```{r wbcScore, eval=TRUE}
+
+getScore <- function(aVec) {
+    dd <- density(aVec)
+    dd$x[which(dd$y == max(dd$y))]
+}
+xxCont <- xx1[negCont, ]
+WBCscore <- apply(xxCont, 2, getScore)
+names(WBCscore) == pDat1$CEL.file  # all T
+pDat1 <- cbind(pDat1, WBCscore)
+
+```
+construct comparison metadata. 
+```{r goups, eval=TRUE}
+
+
+table(pDat1$Status)  # LiverProgression (10) vs stable (28) these have the most samples
+
+
+Comparison1 <- rep(NA, nrow(pDat1))
+Comparison1[which(pDat1$Status == "progression")] <- "Case"
+Comparison1[which(pDat1$Status == "stable")] <- "Control"
+pDat1 <- cbind(pDat1, Comparison1)
+pDat2 <- pDat1[ which(!is.na(pDat1$Comparison1)), ]  # 38    8
+
+xxCTC <- read.csv(file="noneCTCexp.csv", row.names=1, header=T, stringsAsFactors=F) 
+xxCTC <- xx1[, which(!is.na(pDat1$Comparison1))]  # 18513    38
+sum(colnames(xxCTC) == pDat2$celFiles) == nrow(pDat2) # TRUE
+colnames(xxCTC) <- pDat2$SampNam
+
+```
+
+
+## RUV setup 
+```{r ruvsetup, eval=TRUE, message=FALSE}
+
+library(ruv)
+library(ggplot2)
+
+# set negative controls 
+ctrl <- rep(FALSE, nrow(xxCTC))
+ctrl[which(rownames(xxCTC) %in% negCont) ] <- TRUE
+
+# input expression matrix
+YA <- t(xxCTC)   # Note that This data is transposed to agree with vignette
+
+# Groups for differential expression
+gA <- as.matrix(pDat2$Comparison1)
+```
+
+```{r unadj, eval=TRUE, message=FALSE}
+fit_unadj <- RUV4(YA, X = gA,  ctl = ctrl,  k = 0)
+fit_unadj.summary <- ruv_summary(YA, fit_unadj, pDat2)
+#ruv_hist(fit_unadj.summary) + ggtitle("Unadjusted")
+```
+
+```{r tryk, eval=TRUE, message=FALSE, cache=TRUE}
+
+ks <- c( 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 18, 20, 22, 23, 24)
+## Define empty lists and use them in the for loop to store the results
+fit_ruv4_all_k <- list()
+fit_ruv4_all_k.summary <- list()
+for (K in ks){
+  fit_ruv4_all_k[[K]] <- RUV4(YA, X = gA,
+                            ctl = ctrl,
+                            k = K, Z = 1, eta = NULL,
+                            fullW0 = NULL, inputcheck = TRUE)
+
+  fit_ruv4_all_k.summary[[K]] <- ruv_summary(YA,
+                                           fit_ruv4_all_k[[K]],
+                                           pDat2)
+
+} 
+ruv_cancorplot(YA, pDat2$Comparison1, ctrl)     #plots, as a function of k, the square of of the first canonical correlation of X and the first k left singular vectors of Y
+
+```
+
+> What we want is the full set of genes (black) to be more related to progression than negative controls(gene). 

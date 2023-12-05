@@ -1,0 +1,95 @@
+---
+title: "S2_CTCgene_PCA_explore"
+author: "Zeqi Niu"
+date: "7/8/2021"
+output: html_document
+---
+```{r}
+library(readxl)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+```
+
+```{r}
+exprSet <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+sdata <- read.csv("./sdata.csv", check.names = FALSE, row.names = 1)
+lung_genes <- read_excel("../lung_panel_genes.xlsx", col_names = FALSE, sheet = "96panel")
+```
+
+```{r}
+exprSet1 <- exprSet[rownames(exprSet) %in% lung_genes$...1,]
+write.csv(exprSet1, "exprSet1_96lung.csv")
+setdiff(lung_genes$...1,rownames(exprSet1))
+sdata <- sdata[sdata$`Sample Type`== "Cell",]
+sdata <- sdata[sdata$Type == "Tumor" | sdata$Type == "Healthy",]
+exprSet1 <- exprSet1[,colnames(exprSet) %in% sdata$`Sample Name`]
+tMat <- t(as.matrix(exprSet1))
+Sacp <- prcomp(tMat)
+aa <- as.data.frame(Sacp$x)
+aa$group <- sdata$Status
+ggplot(aa,aes(x = PC2, y = PC3, color = group)) + geom_point() + theme(legend.position = "top")
+
+```
+
+
+
+### correlation analysis
+
+```{r}
+
+```
+
+#### subset to gene of interest
+
+```{r}
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[!is.na(sdata$`CTC number`),]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+```
+```{r}
+gene_df <- exprSet[rownames(exprSet) %in% rownames(genelist),]
+gene_df <- t(gene_df)
+# does the data line up?
+all(rownames(gene_df) == sdata$`Sample Name`)
+
+gene_df <- cbind(gene_df,sdata$`CTC number`)
+gene_df <- as.data.frame(gene_df)
+colnames <- colnames(gene_df)
+colnames <- colnames[1:(length(colnames)-1)]
+colnames <- c(colnames,"CTC")
+colnames(gene_df) <- colnames
+```
+```{r}
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+
+res_df <- data.frame()
+for(i in 1:(length(gene_df)-1)){
+  y <- as.numeric(gene_df[,i])
+  CTC <- gene_df$CTC
+  l <- lm(y ~ CTC)
+  coef <- t(as.matrix(l$coefficients))
+  int <- confint(l, 'CTC', level=0.95)
+  pval <- t(as.matrix(c("pval" = lmp(l))))
+  res <- cbind(coef, int, pval)
+  rownames(res) <- colnames(gene_df)[i]
+  res_df <- rbind(res_df, res)
+}
+res_df <- tibble::rownames_to_column(res_df, var = "gene")
+```
+Plotting
+```{r}
+library(ggplot2)
+ggplot(res_df, aes(x=gene, y = CTC))+
+  geom_pointrange(aes(ymin=`2.5 %`,ymax=`97.5 %`),color="black", shape = 18)+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=90,hjust=1))+
+  labs(x = "genes", y = "linear coef +/- 95% CI")
+```
+

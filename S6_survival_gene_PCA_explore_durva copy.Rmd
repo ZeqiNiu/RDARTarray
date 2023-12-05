@@ -1,0 +1,99 @@
+---
+title: "S6_survival_gene_PCA_explore"
+author: "Zeqi Niu"
+date: "12/13/2021"
+output: html_document
+---
+```{r}
+library(readxl)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(survival)
+```
+# PCA plot
+```{r}
+exprSet <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+sdata <- read.csv("./sdata_durva.csv", check.names = FALSE, row.names = 1)
+sdata <- sdata[sdata$Durva == 1, ] 
+sdata <- sdata[!is.na(sdata$`Sample Name`),]
+exprSet <- exprSet[, colnames(exprSet) %in% sdata$`Sample Name`]
+timepoint <- "After"
+if(timepoint  == "Base"){
+  survival_genes <- read.csv("baseline expression with survival_durva.csv")
+}
+if(timepoint  == "Mid"){
+  survival_genes <- read.csv("wk4 expression with survival_durva.csv")
+}
+if(timepoint  == "After"){
+  survival_genes <- read.csv("1mon expression with survival_durva.csv")
+}
+```
+```{r}
+sdata <- sdata[,-16:-39]
+sdata$PurificationTechnology <- NULL
+sdata$`Sample Source` <- NULL
+sdata$`Plate Name` <- NULL
+```
+
+```{r}
+exprSet1 <- exprSet[make.names(rownames(exprSet)) %in% survival_genes$Variable,]
+setdiff(survival_genes$Variable,rownames(exprSet1)) # which genes did not match up?
+sdata <- sdata[sdata$TimePoint == paste(timepoint),]
+unique(sdata$TimePoint)
+exprSet <- exprSet1[,colnames(exprSet1) %in% sdata$`Sample Name`]
+tMat <- t(as.matrix(exprSet))
+Sacp <- prcomp(tMat)
+aa <- as.data.frame(Sacp$x)
+aa$group <- sdata$Status
+ggplot(aa,aes(x = PC1, y = PC2, color = group)) + geom_point() + theme(legend.position = "top")
+```
+Here see which PC is the most stratifying component. Most of them is just the PC1. 
+
+# PCA score vs K-M graph
+```{r}
+pfs <- read_excel("../matching_PFStable_Dec_newversion.xlsx")
+pfs1 <- separate(pfs, `patient ID`, c("year", "um", "id"), sep = " " )
+pfs1$id <- as.factor(as.numeric(pfs1$id))
+pfs2 <- pfs1[ , c("id", "PFS Days","PFS month","right censor","progression event")]
+```
+
+```{r}
+pdata <- merge(sdata, pfs2, by.x = "PatientID", by.y = "id")
+#exprSet <- exprSet_backup
+# exprSet_base <- exprSet[, colnames(exprSet) %in% pdata_base$`Sample Name` ]
+# exprSet_base1 <- t(exprSet_base)
+coxdata <- merge(pdata, aa, by.x ="Sample Name", by.y = 0)
+
+colnames <- make.names(colnames(coxdata))
+colnames(coxdata) <- colnames
+write.csv(coxdata, paste("coxdata_", timepoint, "_durva.csv", sep = ""))
+```
+
+# PC1 high vs low KM graph
+```{r}
+survplotdata <- coxdata[,c('PFS.month', 'progression.event','PC1')]
+
+# set Z-scale cut-offs for high and low expression
+midExpr <-  as.numeric(quantile(survplotdata[,'PC1'], probs = 0.5))
+
+survplotdata[, 'PC1_binary'] <- ifelse(survplotdata[,'PC1'] >= midExpr, 'High','Low')
+
+
+# relevel the factors to have mid as the ref level
+survplotdata[,'PC1_binary'] <- factor(survplotdata[,'PC1_binary'],
+                              levels = c('Low', 'High'))
+
+library(survminer)
+
+
+ggsurvplot(survfit(Surv(PFS.month, progression.event) ~ PC1_binary,
+                   data = survplotdata),
+            data = survplotdata,
+            pval = TRUE,
+            break.time.by = 5,
+            ggtheme = theme_minimal(),
+            risk.table.y.text.col = TRUE,
+            risk.table.y.text = FALSE)
+```
+

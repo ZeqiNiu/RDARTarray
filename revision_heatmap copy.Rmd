@@ -1,0 +1,90 @@
+---
+title: "revision_heatmap"
+author: "Zeqi Niu"
+date: '2023-08-31'
+output: html_document
+---
+
+```{r}
+library(circlize)
+library('ComplexHeatmap')
+library(readxl)
+```
+
+
+```{r}
+diff_bw4 <- read.csv("bw4_fold_change_DEGs_sig_genes_top50.csv")
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+
+# new comprange
+sdata_base <- sdata[sdata$TimePoint=="Base",]
+sdata_mid <- sdata[sdata$TimePoint=="Mid",]
+sdata_after <- sdata[sdata$TimePoint=="After",]
+patient_id <- intersect(sdata_base$PatientID, sdata_mid$PatientID)
+sdata <- sdata[sdata$PatientID %in% patient_id,]
+sdata <- sdata[!sdata$TimePoint == "After",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+exp_topgenes_bm <-exprSet[rownames(exprSet) %in% diff_bw4$X,]
+```
+
+```{r}
+matching <- read_excel("Matching patient IDs.xlsx")
+sdata_raw <- sdata
+sdata <- merge(sdata, matching, by.x = "PatientID", by.y = "raw")
+```
+
+```{r}
+set.seed(123)
+annot1 <- read_xlsx("genenamesbasemid_75_heatmaplabel_2.xlsx")
+col_ha <- HeatmapAnnotation('Time Point' =sdata$TimePoint,  
+                            'Progression' = sdata$Status,
+                            col = list('Time Point' = c("Base" ='#ccece6', "Mid" ='#41ae76'),
+                                       'Progression' = c("progression" = "#2b8cbe", "stable" = "#ece7f2")))
+col_ha1 <- HeatmapAnnotation("Patient" = anno_text(sdata$paperID, location = 0.5, just = "center"))
+
+left_ha <-rowAnnotation(Proliferation = as.factor(annot1$Proliferation),
+                        Invasion = as.factor(annot1$Invasion), 
+                        Resistance = as.factor(annot1$Resistance),
+                        Metastasis = as.factor(annot1$Metastasis),
+                        Prognosis = as.factor(annot1$Prognosis), 
+                        #Cancer = as.factor(annot1$Cancer),
+                        col = list(Proliferation=c("X"="#C71251", "Y" = "black"), 
+                                   Invasion=c("X"="#C71251", "Y" = "black"),
+                                   Resistance =c("X" = "#C71251"),
+                                   Metastasis=c("X"="#C71251"),
+                                   Prognosis=c("X"="#C71251", "Y" = "black")),
+                                  # Cancer=c("X"="#C71251")),
+                        gp = gpar(col = "grey", lwd= 1),
+                        show_legend = FALSE, 
+                        na_col = '#FDF9FB', 
+                        border = FALSE) 
+
+lgd = Legend(labels = sdata$TimePoint, title = "foo", legend_gp = gpar(fill = 1:6))
+```
+```{r}
+#tiff("RDART_revision_heatmap.tiff", units="in", width=9, height=10, res=300)
+Heatmap(exp_topgenes_bm, top_annotation = col_ha,right_annotation = left_ha, bottom_annotation = col_ha1,
+        show_row_names = TRUE,
+        row_names_gp = gpar(fontsize = 8),
+        show_column_names = FALSE, 
+        show_row_dend = TRUE, 
+         # column_km = 2, 
+        name = "Expression (Log2)",
+        column_title = "CTC Samples",
+        row_title = "Top 50 genes differentially expressed genes",
+        column_dend_reorder = TRUE,
+        row_dend_reorder = FALSE,
+        #row_km = 4, 
+        show_parent_dend_line = FALSE,
+        )
+lgd1 = Legend(labels = c("pre-TX","Week 4"), legend_gp = gpar(fill = c('#ccece6','#41ae76')), title = "Patient Outcome")
+lgd3 = Legend(labels = c("Stable","Progression"), legend_gp = gpar(fill = c('#ece7f2','#2b8cbe')), title = "Time Point")
+
+pd = packLegend(lgd1, lgd3)
+# which is same as 
+pd = packLegend(list = list(lgd1, lgd3))
+draw(pd)
+#dev.off()
+```
+

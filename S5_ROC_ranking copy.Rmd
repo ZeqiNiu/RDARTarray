@@ -1,0 +1,226 @@
+---
+title: "S5_ROC_ranking"
+author: "Zeqi Niu"
+date: "12/2/2021"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+
+```{r}
+library(rpart)
+library(pROC)
+library(readxl)
+```
+```{r}
+library(survival)
+library(readxl)
+library(tidyverse)
+library(survival)
+library(RegParallel)
+```
+# load in pre calculated PFS data
+```{r}
+exprSet <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+exprSet_backup <- exprSet
+sdata <- read.csv("./sdata_durva.csv", check.names = FALSE, row.names = 1)
+pfs <- read_excel("../matching_PFStable_Dec_newversion.xlsx")
+```
+# data clean up
+```{r}
+pfs <- separate(pfs, `patient ID`, c("year", "um", "id"), sep = " " )
+pfs$id <- as.factor(as.numeric(pfs$id))
+sdata$PurificationTechnology <- NULL
+sdata$`Sample Source` <- NULL
+sdata$`Plate Name` <- NULL
+pfs <- pfs[ , c("id", "PFS Days","PFS month","right censor","progression event")]
+pdata <- merge(sdata, pfs, by.x = "PatientID", by.y = "id")
+pdata_backup <- pdata
+```
+
+
+# only looking at PDL1
+```{r}
+pdata <- pdata_backup
+exprSet <- exprSet_backup
+basepts <- pdata[pdata$TimePoint == "Base", ]
+afterpts <- pdata[pdata$TimePoint == "After", ]
+TP2pts <- intersect(basepts$PatientID, afterpts$PatientID)
+pdata <- pdata[pdata$PatientID %in% TP2pts,]
+pdata <- pdata[!is.na(pdata$Well),]
+pdata <- pdata[pdata$TimePoint == "Mid", ]
+
+exprSet <- exprSet[,colnames(exprSet) %in% pdata$`Sample Name`]
+exprSet <- exprSet[rownames(exprSet) == "CD274", ]
+exprSet <- t(exprSet)
+rownames(exprSet) <- make.names(rownames(exprSet))
+#pdata$`Sample Name` <- gsub(" ", ".", pdata$`Sample Name`)
+
+pdata <- data.frame(pdata$`Sample Name`, pdata$Status)
+rowname <- make.names(pdata$pdata..Sample.Name.)
+rownames(pdata) <- rowname
+pdata[,1] <- NULL
+pdata <-  as.data.frame(model.matrix( ~ 0 +pdata.Status, pdata))
+pdata[,2] <- NULL
+
+predtable <- merge(pdata, exprSet, by.x = 0, by.y = 0)
+auc(roc(predtable$pdata.Statusprogression, predtable$CD274, algorithm=2))
+
+```
+
+
+# looking at baseline genes
+```{r}
+pdata <- pdata_backup
+exprSet <- exprSet_backup
+pdata <- pdata[pdata$TimePoint == "Base", ]
+base_survival_genes <- read.csv("baseline expression with survival.csv")
+base_genes <- base_survival_genes$Variable
+
+exprSet <- exprSet[,colnames(exprSet) %in% pdata$`Sample Name`]
+exprSet <- exprSet[rownames(exprSet) %in% base_genes, ] 
+#exprSet <- exprSet[rownames(exprSet) == "CD274", ]
+exprSet_nt <- exprSet
+exprSet <- t(exprSet)
+rownames(exprSet) <- make.names(rownames(exprSet))
+#pdata$`Sample Name` <- gsub(" ", ".", pdata$`Sample Name`)
+
+pdata <- data.frame(pdata$`Sample Name`, pdata$Status)
+rowname <- make.names(pdata$pdata..Sample.Name.)
+rownames(pdata) <- rowname
+pdata[,1] <- NULL
+pdata <-  as.data.frame(model.matrix( ~ 0 +pdata.Status, pdata))
+pdata[,2] <- NULL
+
+
+predtable <- merge(pdata, exprSet, by.x = 0, by.y = 0)
+
+```
+```{r}
+library(pROC)
+auctable <- matrix(ncol = 2, nrow = 0)
+for (i in 3:ncol(predtable)){
+  auc <- auc(roc(predtable$pdata.Statusprogression, predtable[[i]], algorithm=2))
+  auc <- c(auc, colnames(predtable[i]))
+  auctable <- rbind(auctable, auc)
+}
+
+genetable <- merge(auctable, exprSet_nt, by.x = 2, by.y = 0)
+genetable <- t(genetable)
+colnames(genetable) <- genetable[1,]
+genetable <- genetable[2:nrow(genetable),]
+rownames(genetable) <- c("auc",make.names(rownames(genetable)[2: nrow(genetable)]))
+
+tidy_gene_table <- read_excel("gene expression with survival.xlsx", sheet = "baseline")
+tidy_auc <- merge(tidy_gene_table, auctable, by.x = 1, by.y = 2)
+write.csv(tidy_auc, "gene expression with survival_basepg.csv")
+finaltable <- merge(pdata, genetable, by.x = 0, by.y = 0, all.y = TRUE)
+write.csv(finaltable, "base_survival_genes_auc.csv")
+```
+# looking at wk4 genes
+```{r}
+pdata <- pdata_backup
+exprSet <- exprSet_backup
+```
+
+```{r}
+pdata <- pdata[pdata$TimePoint == "Mid", ]
+survival_genes <- read.csv("wk4 expression with survival.csv")
+genes <- survival_genes$Variable
+
+exprSet <- exprSet[,colnames(exprSet) %in% pdata$`Sample Name`]
+exprSet <- exprSet[rownames(exprSet) %in% genes, ] 
+exprSet_nt <- exprSet
+exprSet <- t(exprSet)
+rownames(exprSet) <- make.names(rownames(exprSet))
+#pdata$`Sample Name` <- gsub(" ", ".", pdata$`Sample Name`)
+
+pdata <- data.frame(pdata$`Sample Name`, pdata$Status)
+rowname <- make.names(pdata$pdata..Sample.Name.)
+rownames(pdata) <- rowname
+pdata[,1] <- NULL
+pdata <-  as.data.frame(model.matrix( ~ 0 +pdata.Status, pdata))
+pdata[,2] <- NULL
+
+
+predtable <- merge(pdata, exprSet, by.x = 0, by.y = 0)
+
+```
+
+
+```{r}
+library(pROC)
+auctable <- matrix(ncol = 2, nrow = 0)
+for (i in 3:ncol(predtable)){
+  auc <- auc(roc(predtable$pdata.Statusprogression, predtable[[i]], algorithm=2))
+  auc <- c(auc, colnames(predtable[i]))
+  auctable <- rbind(auctable, auc)
+}
+
+
+genetable <- merge(auctable, exprSet_nt, by.x = 2, by.y = 0)
+genetable <- t(genetable)
+colnames(genetable) <- genetable[1,]
+genetable <- genetable[2:nrow(genetable),]
+rownames(genetable) <- c("auc",make.names(rownames(genetable)[2: nrow(genetable)]))
+
+tidy_gene_table <- read_excel("gene expression with survival.xlsx", sheet = "wk4")
+tidy_auc <- merge(tidy_gene_table, auctable, by.x = 1, by.y = 2)
+write.csv(tidy_auc, "gene expression with survival_wk4pg.csv")
+finaltable <- merge(pdata, genetable, by.x = 0, by.y = 0, all.y = TRUE)
+write.csv(finaltable, "wk4_survival_genes_auc.csv")
+```
+
+# looking at wk10 genes
+```{r}
+pdata <- pdata_backup
+exprSet <- exprSet_backup
+```
+
+```{r}
+pdata <- pdata[pdata$TimePoint == "After", ]
+survival_genes <- read.csv("1mon expression with survival.csv")
+genes <- survival_genes$Variable
+
+exprSet <- exprSet[,colnames(exprSet) %in% pdata$`Sample Name`]
+exprSet <- exprSet[rownames(exprSet) %in% genes, ] 
+exprSet_nt <- exprSet
+exprSet <- t(exprSet)
+rownames(exprSet) <- make.names(rownames(exprSet))
+#pdata$`Sample Name` <- gsub(" ", ".", pdata$`Sample Name`)
+
+pdata <- data.frame(pdata$`Sample Name`, pdata$Status)
+rowname <- make.names(pdata$pdata..Sample.Name.)
+rownames(pdata) <- rowname
+pdata[,1] <- NULL
+pdata <-  as.data.frame(model.matrix( ~ 0 +pdata.Status, pdata))
+pdata[,2] <- NULL
+
+
+predtable <- merge(pdata, exprSet, by.x = 0, by.y = 0)
+
+```
+
+
+```{r}
+library(pROC)
+auctable <- matrix(ncol = 2, nrow = 0)
+for (i in 3:ncol(predtable)){
+  auc <- auc(roc(predtable$pdata.Statusprogression, predtable[[i]], algorithm=2))
+  auc <- c(auc, colnames(predtable[i]))
+  auctable <- rbind(auctable, auc)
+}
+
+
+genetable <- merge(auctable, exprSet_nt, by.x = 2, by.y = 0)
+genetable <- t(genetable)
+colnames(genetable) <- genetable[1,]
+genetable <- genetable[2:nrow(genetable),]
+rownames(genetable) <- c("auc",make.names(rownames(genetable)[2: nrow(genetable)]))
+
+tidy_gene_table <- read_excel("gene expression with survival.xlsx", sheet = "1mon")
+finaltable <- merge(pdata, genetable, by.x = 0, by.y = 0, all.y = TRUE)
+write.csv(finaltable, "wk10_survival_genes_auc.csv")
+```
