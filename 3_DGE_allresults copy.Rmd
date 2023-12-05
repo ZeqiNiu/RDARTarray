@@ -1,0 +1,851 @@
+---
+title: "3_DGE"
+author: "Zeqi Niu"
+date: "6/29/2021"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+---
+
+*Goal*:
+This script divides the dataset into different groups and do DGE analysis. The code will reset the dataset before every comparison range change. 
+
+# Load in data and filtering
+Takes normalized exprSet and cleaned up sdata
+```{r}
+library(limma)
+library(tidyverse)
+# (optional) if script1 "1_data_import_and_clean_up" was run before and you have the csv files, you can start this with:
+exprSet_raw <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+sdata <- read.csv("./sdata_durva.csv", check.names = FALSE, row.names = 1)
+```
+
+# Filtering out the low express gene  
+Because of the low dynamic range of microarray data, a lot of the low epxressing genes will be ranked low, and their DEG does not really have actual meanings, they are only low expressing genes. 
+
+```{r}
+medianFilter <- TRUE
+sdFilter <- FALSE
+sdFilterCutoff <- 0.05
+
+# medianFilter: half of the median of the median list of all genes. 
+if(medianFilter) {
+  gene.median <- apply(exprSet_raw,1,median)
+  halfMed <- median(gene.median)
+  ind <- which(gene.median>halfMed)
+  exprSet <- exprSet_raw[ind, ]
+}
+
+#sdFilter
+if(sdFilter){
+  gene.mean1 <- apply(exprSet_raw,1,mean)
+  gene.sd1 <- apply(exprSet_raw,1,sd)
+  gene.cv1 <- gene.sd1/gene.mean1
+  ind <- which(gene.cv1> sdFilterCutoff  )
+  exprSet <- exprSet_raw[ind, ]
+}
+```
+
+for all these analysis for the first paper, we are going to focus only on Cells not Exosome samples for now. 
+
+```{r}
+sdata <- sdata[sdata$`Sample Type` == "Cell",]
+exprSet_backup <- exprSet
+sdata_backup <- sdata
+```
+
+# categorical variables 
+
+some nots on  the common data reset and cleanup paragraph:
+adjust sdata and exprSet into the correct comparison, for example, do we want to compare in all samples?or just pull out the cancer patient samples?  
+Note: when changing different comparison ranges, one need to come back here to change comprange and exprSet, sdata in order for everything to match up.  
+Set variable comprange to be indicate what is the comparison happening within: 
+"whole": entire dataset including healthy and cancer;   
+"cancer", cancer only;   
+"bwk4": only baseline and wk4 patients;   
+"ba": only baseline and after patients (may contain the wk4 as well)  
+"base": baseline patient only  
+"mid": wk4 patient only  
+"after": 1month patient only  
+"progression": all progression patients  
+"stable": all stable patients  
+
+
+##  cancer vs healthy vs cell line  
+comprange: whole; compare group: cell line vs healthy, healthy vs tumor, cell line vs tumor. 
+
+
+```{r}
+comprange <- "whole"
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+sdata <- sdata
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+```{r}
+if (comprange == "whole"){
+  groups = sdata$Type
+  table(groups) 
+  f = factor(groups,levels=c("Tumor","Healthy","Cell line")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("Tumor","Healthy","Cellline") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(Cellline - Healthy, Healthy-Tumor, Cellline-Tumor, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = 2, number = 100, adjust = "fdr")
+}
+```
+##  Time points  
+comprange: cancer; compare group: baseline vs wk4, baseline vs after, wk4 vs after
+```{r}
+#reset
+comprange <- "cancer" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+```{r}
+if (comprange == "cancer"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("After","Base","Mid")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("After","Base","Mid") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(Base - Mid, Base-After, Mid-After, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = 1, number = Inf, adjust = "fdr")
+}
+```
+
+##  Progression status  
+comprange: cancer; compare group: progression vs stable
+```{r}
+if (comprange == "cancer"){
+  groups = sdata$Status
+  table(groups) 
+  f = factor(groups,levels=c("progression","stable")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("progression","stable") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(progression - stable, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = 1, number = Inf, adjust = "fdr")
+}
+```
+
+##  CTC level  
+comprange: cancer minus some samples(didn't have CTC number); 
+
+```{r}
+if (comprange == "cancer"){
+  # subsetting to patients who had CTC count data
+  sdata <- sdata[!is.na(sdata$`CTC level`),]
+  exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+  dim(sdata)
+  dim(exprSet)
+  
+  # DEG analysis
+  groups = sdata$`CTC level`
+  table(groups) 
+  f = factor(groups,levels=c("high","low","mid")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("high","low", "mid") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(high - low, mid - low, mid- high, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = 1, number = Inf, adjust = "fdr", p.value = 0.05)
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+```
+
+*for generating Figure 5D*
+```{r}
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[order(sdata$`CTC level`),]
+sdata <- sdata[!is.na(sdata$`CTC level`),]
+# this is for Figure 5 D
+sdata_high <- sdata[sdata$`CTC level` == "high",]
+sdata_low <- sdata[sdata$`CTC level` == "low",]
+exprSet_high <- exprSet[,colnames(exprSet) %in% sdata_high$`Sample Name`]
+exprSet_low <- exprSet[,colnames(exprSet) %in% sdata_low$`Sample Name`]
+G3BP1_high <- exprSet_high[rownames(exprSet_high) == "G3BP1",]; G3BP1_high$group <- "high"
+G3BP1_low <- exprSet_low[rownames(exprSet_low) == "G3BP1",]; G3BP1_low$group <- "low"
+
+write.csv(G3BP1_high,"G3BP1_CTChigh.csv")
+write.csv(G3BP1_low,"G3BP1_CTClow.csv")
+```
+
+  
+##  progression prediction at each single time point 
+
+### base
+comprange: base; compare group: progression vs stable
+```{r}
+#reset
+comprange <- "base" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$TimePoint=="Base",]        
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "base"){
+  groups = sdata$Status
+  table(groups) 
+  f = factor(groups,levels=c("progression","stable")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("progression","stable") 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(progression - stable, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+}
+
+```
+### wk4
+comprange: wk4; compare group: progression vs stable  
+```{r}
+#reset
+comprange <- "mid" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$TimePoint=="Mid",]        
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "mid"){
+  groups = sdata$Status
+  table(groups) 
+  f = factor(groups,levels=c("progression","stable")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("progression","stable") 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(progression - stable, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+}
+
+```
+### after
+comprange: after; compare group: progression vs stable  
+```{r}
+#reset
+comprange <- "after" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$TimePoint=="After",]        
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "after"){
+  groups = sdata$Status
+  table(groups) 
+  f = factor(groups,levels=c("progression","stable")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("progression","stable") 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(progression - stable, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+}
+
+```
+
+
+## timepoint in all patient group
+
+### paired-analysis 
+
+comprange: bwk4; compare group: baseline vs. wk4  
+```{r}
+#reset
+comprange <- "bwk4" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+
+# new comprange
+sdata_base <- sdata[sdata$TimePoint=="Base",]
+sdata_mid <- sdata[sdata$TimePoint=="Mid",]
+sdata_after <- sdata[sdata$TimePoint=="After",]
+patient_id <- intersect(sdata_base$PatientID, sdata_mid$PatientID)
+sdata <- sdata[sdata$PatientID %in% patient_id,]
+sdata <- sdata[!sdata$TimePoint == "After",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "bwk4"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","Mid")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fMid", number = 50, adjust = "fdr", p.value = 0.05)
+  write.csv(top_genes, "bw4_fold_change_DEGs_sig_genes_top50.csv")
+  #top_genes <- top_genes[top_genes$adj.P.Val < 0.05,]
+  #top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  
+  #rite.csv(top_genes_lfc, "./toptables/bwk4_paired_sortlfc_91.csv")
+}
+
+```
+
+comprange: ba; compare group: baseline vs. after
+```{r}
+#reset
+comprange <- "ba" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+
+# new comprange
+sdata_base <- sdata[sdata$TimePoint=="Base",]
+sdata_mid <- sdata[sdata$TimePoint=="Mid",]
+sdata_after <- sdata[sdata$TimePoint=="After",]
+patient_id <- intersect(sdata_base$PatientID, sdata_after$PatientID)
+sdata <- sdata[sdata$PatientID %in% patient_id,]
+sdata <- sdata[!sdata$TimePoint == "Mid",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "ba"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","After")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fAfter", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+}
+
+```
+
+## timepoint in status subsets 
+### progression patients
+
+--------
+
+*baseline vs mid*
+comprange: progression (bm); compare group: baseline vs. mid;   
+
+```{r}
+# reset
+comprange <- "progression" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[sdata$Status=="progression",]
+sdata <- sdata[!sdata$TimePoint == "After",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+#### unpaired analysis
+```{r}
+if (comprange == "progression"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","Mid")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ 1 + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fMid", number = Inf, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+
+```
+```{r}
+# This is for plotting in figure 5 
+stable_gene_list <- read.csv("stable patients bw4 DEG signatures.csv")
+stable_gene_list <- stable_gene_list$X
+table(rownames(top_genes) %in% stable_gene_list)
+stable_top_genes <- top_genes[rownames(top_genes) %in% stable_gene_list,]
+write.csv(stable_top_genes, "progressing patients bw4 DEG stable signatures.csv")
+```
+
+#### paired analysis
+```{r}
+# get rid of samples with single time points
+idcount <- sdata %>% count(PatientID)
+idcount <- idcount[idcount$n > 1,]
+sdata <- sdata[sdata$PatientID %in% idcount$PatientID,]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+```
+```{r}
+if (comprange == "progression"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","Mid")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fMid", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+
+```
+
+
+----------
+
+*baseline vs after*
+comprange: progression (ba); compare group: baseline vs. after;   
+```{r}
+# reset
+comprange <- "progression" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[sdata$Status=="progression",]
+sdata <- sdata[!sdata$TimePoint == "Mid",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+#### unpaired analysis
+```{r}
+if (comprange == "progression"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","After")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ 1 + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fAfter", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+
+```
+#### paired analysis
+```{r}
+# get rid of samples with single time points
+idcount <- sdata %>% count(PatientID)
+idcount <- idcount[idcount$n > 1,]
+sdata <- sdata[sdata$PatientID %in% idcount$PatientID,]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+```{r}
+if (comprange == "progression"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","After")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix(~ ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fAfter", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+
+```
+
+### stable patients
+
+----------
+
+*baseline vs mid*
+comprange: stable (bm); compare group: baseline vs. mid  
+```{r}
+# reset
+comprange <- "stable" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[sdata$Status=="stable",]
+sdata <- sdata[!sdata$TimePoint == "After",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+#### unpaired analysis
+```{r}
+if (comprange == "stable"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","Mid")) # change the levels based on the table results from last line
+  #ID = factor(sdata$PatientID)
+  design = model.matrix( ~1 + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fMid", number = 50, adjust = "fdr")
+  top_genes <- top_genes[top_genes$adj.P.Val < 0.05,]
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+  write.csv(top_genes_lfc, "stable patients bw4 DEG signatures.csv")
+}
+
+```
+#### paired analysis
+comprange: stable; compare group: baseline vs. mid  
+```{r}
+# get rid of samples with single time points
+idcount <- sdata %>% count(PatientID)
+idcount <- idcount[idcount$n > 1,]
+sdata <- sdata[sdata$PatientID %in% idcount$PatientID,]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+```{r}
+if (comprange == "stable"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","Mid")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix( ~ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fMid", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+```
+
+----------
+
+*baseline vs after*
+
+
+comprange: stable (ba); compare group: baseline vs. after   
+```{r}
+# reset
+comprange <- "stable" 
+exprSet <- exprSet_backup
+sdata <- sdata_backup
+# new comprange
+sdata <- sdata[sdata$Type == "Tumor",]
+sdata <- sdata[sdata$Status=="stable",]
+sdata <- sdata[!sdata$TimePoint == "Mid",]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+#### unpaired analysis
+```{r}
+if (comprange == "stable"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","After")) # change the levels based on the table results from last line
+  #ID = factor(sdata$PatientID)
+  design = model.matrix( ~1 + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fAfter", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+
+```
+#### paired analysis
+comprange: stable(ba); compare group: baseline vs. after  
+```{r}
+# get rid of samples with single time points
+idcount <- sdata %>% count(PatientID)
+idcount <- idcount[idcount$n > 1,]
+sdata <- sdata[sdata$PatientID %in% idcount$PatientID,]
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+
+#double check dimension
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+```{r}
+if (comprange == "stable"){
+  groups = sdata$TimePoint
+  table(groups) 
+  f = factor(groups,levels=c("Base","After")) # change the levels based on the table results from last line
+  ID = factor(sdata$PatientID)
+  design = model.matrix( ~ID + f)
+  data.fit = lmFit(exprSet, design)
+  data.fit.eb = eBayes(data.fit)
+  
+  # results
+  result <- decideTests(data.fit.eb, p.value = 0.05)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = "fAfter", number = 50, adjust = "fdr")
+  top_genes_lfc <-top_genes[order(abs(top_genes$logFC),decreasing = TRUE),]
+  print(head(top_genes_lfc, 10))
+}
+```
+
+# PDL1 high vs low comparison
+## all patients
+```{r}
+comprange <- "whole"
+sdata <- sdata_backup
+exprSet <- exprSet_raw[,colnames(exprSet_raw) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+#median filter gets rid of PDL1
+midExpr <-  as.numeric(quantile(exprSet[rownames(exprSet) == "CD274",], probs = 0.5))
+PDL1 <- t(as.data.frame(exprSet[rownames(exprSet) == "CD274",]))
+sdata <- merge(sdata, PDL1, by.x = "Sample Name", by.y = 0)
+sdata$CD274 <- ifelse(sdata$CD274 >= midExpr, 'High','Low')
+```
+```{r}
+if (comprange == "whole"){
+  groups = sdata$CD274
+  table(groups) 
+  f = factor(groups,levels=c("High","Low")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("High","Low") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(High - Low, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, number = 100, adjust = "fdr")
+}
+```
+
+## base patients
+```{r}
+#reset
+comprange <- "base" 
+sdata <- sdata_backup
+sdata <- sdata[sdata$TimePoint=="Base",]
+exprSet <- exprSet_raw[,colnames(exprSet_raw) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+#median filter gets rid of PDL1
+midExpr <-  as.numeric(quantile(exprSet[rownames(exprSet) == "CD274",], probs = 0.5))
+PDL1 <- t(as.data.frame(exprSet[rownames(exprSet) == "CD274",]))
+sdata <- merge(sdata, PDL1, by.x = "Sample Name", by.y = 0)
+sdata$CD274 <- ifelse(sdata$CD274 >= midExpr, 'High','Low')
+```
+```{r}
+if (comprange == "base"){
+  groups = sdata$CD274
+  table(groups) 
+  f = factor(groups,levels=c("High","Low")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("High","Low") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(High - Low, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, number = 100, adjust = "fdr")
+}
+```
+
+## wk4 patients
+```{r}
+#reset
+comprange <- "mid" 
+sdata <- sdata_backup
+sdata <- sdata[sdata$TimePoint=="Mid",]
+exprSet <- exprSet_raw[,colnames(exprSet_raw) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+#median filter gets rid of PDL1
+midExpr <-  as.numeric(quantile(exprSet[rownames(exprSet) == "CD274",], probs = 0.5))
+PDL1 <- t(as.data.frame(exprSet[rownames(exprSet) == "CD274",]))
+sdata <- merge(sdata, PDL1, by.x = "Sample Name", by.y = 0)
+sdata$CD274 <- ifelse(sdata$CD274 >= midExpr, 'High','Low')
+```
+```{r}
+if (comprange == "mid"){
+  groups = sdata$CD274
+  table(groups) 
+  f = factor(groups,levels=c("High","Low")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("High","Low") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(High - Low, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, number = 100, adjust = "fdr")
+}
+```
+
+## after patients
+```{r}
+#reset
+comprange <- "after" 
+sdata <- sdata_backup
+sdata <- sdata[sdata$TimePoint=="After",]
+exprSet <- exprSet_raw[,colnames(exprSet_raw) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+#median filter gets rid of PDL1
+midExpr <-  as.numeric(quantile(exprSet[rownames(exprSet) == "CD274",], probs = 0.5))
+PDL1 <- t(as.data.frame(exprSet[rownames(exprSet) == "CD274",]))
+sdata <- merge(sdata, PDL1, by.x = "Sample Name", by.y = 0)
+sdata$CD274 <- ifelse(sdata$CD274 >= midExpr, 'High','Low')
+```
+```{r}
+if (comprange == "after"){
+  groups = sdata$CD274
+  table(groups) 
+  f = factor(groups,levels=c("High","Low")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("High","Low") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(High - Low, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, number = 100, adjust = "fdr")
+}
+```

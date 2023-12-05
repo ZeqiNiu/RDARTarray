@@ -1,0 +1,108 @@
+---
+title: "3_DGE"
+author: "Zeqi Niu"
+date: "6/29/2021"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+---
+
+*Goal*:
+This script divides the dataset into different groups and do DGE analysis. The code will reset the dataset before every comparison range change. 
+
+# Load in data and filtering
+Takes normalized exprSet and cleaned up sdata
+```{r}
+library(limma)
+library(tidyverse)
+# (optional) if script1 "1_data_import_and_clean_up" was run before and you have the csv files, you can start this with:
+exprSet_raw <-  read.csv("./exprSet_step1.csv", check.names = FALSE, row.names = 1)
+sdata <- read.csv("./sdata_durva.csv", check.names = FALSE, row.names = 1)
+```
+
+# Filtering out the low express gene  
+Because of the low dynamic range of microarray data, a lot of the low epxressing genes will be ranked low, and their DEG does not really have actual meanings, they are only low expressing genes. 
+
+```{r}
+medianFilter <- TRUE
+sdFilter <- FALSE
+sdFilterCutoff <- 0.05
+
+# medianFilter: half of the median of the median list of all genes. 
+if(medianFilter) {
+  gene.median <- apply(exprSet_raw,1,median)
+  halfMed <- median(gene.median)
+  ind <- which(gene.median>halfMed)
+  exprSet <- exprSet_raw[ind, ]
+}
+
+#sdFilter
+if(sdFilter){
+  gene.mean1 <- apply(exprSet_raw,1,mean)
+  gene.sd1 <- apply(exprSet_raw,1,sd)
+  gene.cv1 <- gene.sd1/gene.mean1
+  ind <- which(gene.cv1> sdFilterCutoff  )
+  exprSet <- exprSet_raw[ind, ]
+}
+```
+
+for all these analysis for the first paper, we are going to focus only on Cells not Exosome samples for now. 
+
+```{r}
+sdata <- sdata[sdata$`Sample Type` == "Cell",]
+exprSet_backup <- exprSet
+sdata_backup <- sdata
+```
+
+# categorical variables 
+
+some nots on  the common data reset and cleanup paragraph:
+adjust sdata and exprSet into the correct comparison, for example, do we want to compare in all samples?or just pull out the cancer patient samples?  
+Note: when changing different comparison ranges, one need to come back here to change comprange and exprSet, sdata in order for everything to match up.  
+Set variable comprange to be indicate what is the comparison happening within: 
+"whole": entire dataset including healthy and cancer;   
+"cancer", cancer only;   
+"bwk4": only baseline and wk4 patients;   
+"ba": only baseline and after patients (may contain the wk4 as well)  
+"base": baseline patient only  
+"mid": wk4 patient only  
+"after": 1month patient only  
+"progression": all progression patients  
+"stable": all stable patients  
+
+## Figure 3 patients only 
+```{r}
+comprange <-  "figure3"
+sdata <- sdata[sdata$Figure3_binary == 1,]
+sdata <- sdata[!is.na(sdata$Well),]
+print("patients included:"); print(unique(sdata1$PatientID))
+exprSet <- exprSet[,colnames(exprSet) %in% sdata$`Sample Name`]
+dim(sdata)
+dim(exprSet)
+length(unique(sdata$PatientID))
+```
+
+##  Progression status  
+comprange: cancer; compare group: progression vs stable
+```{r}
+if (comprange == "figure3"){
+  groups = sdata$Status
+  table(groups) 
+  f = factor(groups,levels=c("progression","stable")) # change the levels based on the table results from last line
+  design = model.matrix(~ 0 + f)
+  colnames(design)=c("progression","stable") #(optional) would recommend naming it same as the levels. 
+  data.fit = lmFit(exprSet, design)
+  contrast.matrix = makeContrasts(progression - stable, levels = design)
+  data.fit.con = contrasts.fit(data.fit,contrast.matrix)
+  data.fit.eb = eBayes(data.fit.con)
+  
+  # results
+  result <- decideTests(data.fit.eb)
+  print(summary(result))
+  top_genes <- topTable(data.fit.eb, coef = 1, number = Inf, adjust = "fdr")
+}
+```
